@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+env/
+build/
+dist/
+.pytest_cache/
+.vscode/
+*.log
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# virtualenv
+\.venv/
