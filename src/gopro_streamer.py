@@ -37,6 +37,7 @@ class GoProStreamer:
         self.preview_lock = threading.Lock()
         self.preview_window_open = False
         self.close_prompt_active = False
+        self.preview_close_requested = False
 
     def _create_tray_image(self) -> Image.Image:
         image = Image.new("RGB", (64, 64), "black")
@@ -48,6 +49,8 @@ class GoProStreamer:
     def _show_preview(self, enabled: bool) -> None:
         with self.preview_lock:
             self.preview_enabled = enabled
+            if not enabled:
+                self.preview_close_requested = True
 
     def _tray_show_preview(self, icon, item) -> None:
         self._show_preview(True)
@@ -167,6 +170,16 @@ class GoProStreamer:
         if self.preview_enabled:
             self._run_local_preview(self.window_title)
 
+    def _run_headless_without_virtualcam(self) -> None:
+        print("[+] Mode sans webcam virtuelle actif. Utilise l'icône de notification pour afficher l'aperçu ou quitter.")
+
+        while self.running and not self.stop_event.is_set():
+            if self.preview_enabled:
+                self._run_local_preview(self.window_title)
+                continue
+
+            time.sleep(0.1)
+
     def start(self) -> None:
         print(f"[+] Initialisation de la GoPro ({self.res}p)...")
 
@@ -264,11 +277,23 @@ class GoProStreamer:
                         if visible >= 1:
                             self.close_prompt_active = False
 
+                    elif self.preview_close_requested and self.preview_window_open:
+                        try:
+                            cv2.destroyWindow(self.window_title)
+                        except cv2.error:
+                            pass
+                        self.preview_window_open = False
+                        self.preview_close_requested = False
+
         except KeyboardInterrupt:
             print("\n[+] Arrêt demandé par l'utilisateur (Ctrl+C).")
         except Exception as exc:
-            print(f"[-] Webcam virtuelle indisponible, aperçu local activé : {exc}")
-            self._run_preview_if_enabled()
+            print(f"[-] Webcam virtuelle indisponible : {exc}")
+            if self.preview_enabled:
+                print("[+] Aperçu local activé.")
+                self._run_local_preview(self.window_title)
+            else:
+                self._run_headless_without_virtualcam()
         finally:
             print("[+] Arrêt proprement...")
             self.running = False
