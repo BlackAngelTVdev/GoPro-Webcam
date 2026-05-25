@@ -1,0 +1,89 @@
+name: Build & Release on README version change
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - README.md
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Extract README versions
+        id: extract
+        run: |
+          set -e
+          # read first line of current README and previous commit's README
+          curr_line=$(sed -n '1p' README.md || true)
+          prev_commit=$(git rev-parse HEAD^ || true)
+          prev_line=""
+          if [ -n "$prev_commit" ]; then
+            prev_line=$(git show ${prev_commit}:README.md 2>/dev/null | sed -n '1p' || true)
+          fi
+
+          # extract semver like v1.2.3 or 1.2.3 from the line
+          curr_ver=$(echo "$curr_line" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' || true)
+          prev_ver=$(echo "$prev_line" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' || true)
+
+          echo "curr_line=$curr_line" >> $GITHUB_OUTPUT
+          echo "prev_line=$prev_line" >> $GITHUB_OUTPUT
+          echo "curr_ver=$curr_ver" >> $GITHUB_OUTPUT
+          echo "prev_ver=$prev_ver" >> $GITHUB_OUTPUT
+
+          if [ -n "$curr_ver" ] && [ "$curr_ver" != "$prev_ver" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Debug info
+        if: always()
+        run: |
+          echo "prev: ${{ steps.extract.outputs.prev_ver }}"
+          echo "curr: ${{ steps.extract.outputs.curr_ver }}"
+          echo "changed: ${{ steps.extract.outputs.changed }}"
+
+      - name: Install dependencies
+        if: steps.extract.outputs.changed == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Build Windows executable (PyInstaller)
+        if: steps.extract.outputs.changed == 'true'
+        run: |
+          python -m PyInstaller --onefile --noconsole --name GoPro-Webcam main.py
+
+      - name: Create GitHub Release
+        if: steps.extract.outputs.changed == 'true'
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ steps.extract.outputs.curr_ver }}
+          release_name: Release ${{ steps.extract.outputs.curr_ver }}
+          body: "Automated release triggered by README version change"
+          draft: false
+          prerelease: false
+
+      - name: Upload release asset
+        if: steps.extract.outputs.changed == 'true'
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: dist/GoPro-Webcam.exe
+          asset_name: GoPro-Webcam-windows.exe
+          asset_content_type: application/octet-stream
