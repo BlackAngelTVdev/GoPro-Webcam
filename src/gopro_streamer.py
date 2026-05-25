@@ -13,17 +13,15 @@ os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "fflags;nobuffer|flags;low_delay|m
 
 import cv2
 
-from .config import DEFAULT_FOV, DEFAULT_FPS, DEFAULT_RESOLUTION, FFMPEG_CAPTURE_OPTIONS, STREAM_URL
+from .config import DEFAULT_FPS, DEFAULT_RESOLUTION, FFMPEG_CAPTURE_OPTIONS, STREAM_URL
 from .gopro_api import GoProAPI
 
 
 class GoProStreamer:
-    def __init__(self, res: int = DEFAULT_RESOLUTION, fov: str = DEFAULT_FOV, fps: int = DEFAULT_FPS, show_preview: bool = False, show_chrono: bool = False):
+    def __init__(self, res: int = DEFAULT_RESOLUTION, show_preview: bool = False, show_chrono: bool = False):
         self.running = True
         self.stop_event = threading.Event()
         self.res = res
-        self.fov_name = fov
-        self.fps = fps
         self.show_preview = show_preview
         self.show_chrono = show_chrono
         self.api = GoProAPI()
@@ -49,57 +47,40 @@ class GoProStreamer:
                 self.latest_frame = frame
             self.frame_event.set()
 
-    def _format_chrono(self) -> str:
-        elapsed = timedelta(seconds=int(time.time() - self.start_time))
-        total_seconds = int(elapsed.total_seconds())
-        hours, remainder = divmod(total_seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        if hours:
-            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-        return f"{minutes:02d}:{seconds:02d}"
-
     def _draw_chrono(self, frame):
         if not self.show_chrono:
             return frame
 
-        label = self._format_chrono()
+        elapsed = timedelta(seconds=int(time.time() - self.start_time))
+        total_seconds = int(elapsed.total_seconds())
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        label = f"{hours:02d}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
+
         overlay = frame.copy()
         cv2.rectangle(overlay, (18, 18), (170, 64), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
         cv2.putText(frame, label, (32, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
         return frame
 
-    def _is_virtual_camera_missing(self, exc: Exception) -> bool:
-        message = str(exc).lower()
-        return (
-            "obs virtual camera device not found" in message
-            or "'obs' backend" in message
-            or "no camera registered" in message
-            or ("backend" in message and "camera" in message)
-        )
+    def _run_local_preview(self, window_title: str = "GoPro Live - Aperçu local") -> None:
+        print("[+] Bascule automatique vers l'aperçu local.")
 
-    def _run_preview_only(self, width: int, height: int) -> None:
-        self.show_preview = True
-        print(f"[+] Mode Preview activé automatiquement ({width}x{height} @ {self.fps}fps). Appuie sur 'q' pour quitter.")
+        while self.running and not self.stop_event.is_set():
+            if not self.frame_event.wait(timeout=0.05):
+                continue
 
-        try:
-            while self.running and not self.stop_event.is_set():
-                if not self.frame_event.wait(timeout=0.05):
-                    continue
+            with self.frame_lock:
+                frame = None if self.latest_frame is None else self.latest_frame.copy()
+                self.frame_event.clear()
 
-                with self.frame_lock:
-                    frame = None if self.latest_frame is None else self.latest_frame.copy()
-                    self.frame_event.clear()
+            if frame is None:
+                continue
 
-                if frame is None:
-                    continue
-
-                frame = self._draw_chrono(frame)
-                cv2.imshow("GoPro Live - Aperçu local", frame)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
-        finally:
-            cv2.destroyAllWindows()
+            frame = self._draw_chrono(frame)
+            cv2.imshow(window_title, frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
 
     def start(self) -> None:
         print(f"[+] Initialisation de la GoPro ({self.res}p)...")
@@ -108,11 +89,6 @@ class GoProStreamer:
             if not self.api.start_webcam(self.res):
                 print("[-] La GoPro a refusé de démarrer.")
                 return
-
-            if self.fov_name != "wide":
-                print(f"[+] Application du mode de vue : {self.fov_name}...")
-                if not self.api.set_fov(self.fov_name):
-                    print(f"[!] Note: Le mode '{self.fov_name}' peut être indisponible dans cette résolution sur la Hero 9.")
 
         except Exception as exc:
             print(f"[-] Impossible de configurer la GoPro : {exc}")
@@ -145,15 +121,12 @@ class GoProStreamer:
         reader_thread.start()
 
         self.start_time = time.time()
-        print(f"[+] Initialisation de la Webcam Virtuelle OBS ({width}x{height} @ {self.fps}fps)...")
+        print(f"[+] Initialisation de la Webcam Virtuelle OBS ({width}x{height} @ {DEFAULT_FPS}fps)...")
 
         try:
-            with pyvirtualcam.Camera(width=width, height=height, fps=self.fps, fmt=pyvirtualcam.PixelFormat.BGR) as cam:
+            with pyvirtualcam.Camera(width=width, height=height, fps=DEFAULT_FPS, fmt=pyvirtualcam.PixelFormat.BGR) as cam:
                 print(f"[+] Webcam virtuelle active : {cam.device}")
-                if self.show_preview:
-                    print("[+] Mode Preview activé. Appuie sur 'q' pour quitter.")
-                else:
-                    print("[+] Mode Invisible actif. Fais Ctrl+C dans le terminal pour quitter.")
+                print("[+] Mode Invisible actif. Fais Ctrl+C dans le terminal pour quitter.")
 
                 while self.running and not self.stop_event.is_set():
                     if not self.frame_event.wait(timeout=0.05):
@@ -171,18 +144,15 @@ class GoProStreamer:
                     cam.sleep_until_next_frame()
 
                     if self.show_preview:
-                        cv2.imshow("GoPro Live - Envoi vers OBS", frame)
+                        cv2.imshow("GoPro Live - Aperçu local", frame)
                         if cv2.waitKey(1) & 0xFF == ord("q"):
                             break
 
         except KeyboardInterrupt:
             print("\n[+] Arrêt demandé par l'utilisateur (Ctrl+C).")
         except Exception as exc:
-            if self._is_virtual_camera_missing(exc):
-                print("[!] Caméra virtuelle OBS introuvable, bascule automatique vers l'aperçu local.")
-                self._run_preview_only(width, height)
-                return
-            print(f"[-] Erreur critique : {exc}")
+            print(f"[-] Webcam virtuelle indisponible, aperçu local activé : {exc}")
+            self._run_local_preview()
         finally:
             print("[+] Arrêt proprement...")
             self.running = False
@@ -190,7 +160,6 @@ class GoProStreamer:
             if reader_thread.is_alive():
                 reader_thread.join(timeout=1.0)
             cap.release()
-            if self.show_preview:
-                cv2.destroyAllWindows()
+            cv2.destroyAllWindows()
             self.api.stop_webcam()
             print("[+] Terminé.")
