@@ -15,17 +15,20 @@ os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "fflags;nobuffer|flags;low_delay|m
 
 import cv2
 
+from .app_settings import AppSettings
 from .config import DEFAULT_FPS, DEFAULT_RESOLUTION, FFMPEG_CAPTURE_OPTIONS, STREAM_URL
 from .gopro_api import GoProAPI
+from .settings_dialog import open_settings_dialog
 
 
 class GoProStreamer:
-    def __init__(self, res: int = DEFAULT_RESOLUTION, show_preview: bool = False, show_chrono: bool = False):
+    def __init__(self, res: int = DEFAULT_RESOLUTION, show_preview: bool = False, show_chrono: bool = False, settings: AppSettings | None = None):
         self.running = True
         self.stop_event = threading.Event()
         self.res = res
         self.preview_enabled = show_preview
         self.show_chrono = show_chrono
+        self.settings = settings or AppSettings()
         self.api = GoProAPI()
         self.latest_frame = None
         self.frame_lock = threading.Lock()
@@ -38,6 +41,9 @@ class GoProStreamer:
         self.preview_window_open = False
         self.close_prompt_active = False
         self.preview_close_requested = False
+
+    def _update_settings(self, updated_settings: AppSettings) -> None:
+        self.settings = updated_settings
 
     def _create_tray_image(self) -> Image.Image:
         image = Image.new("RGB", (64, 64), "black")
@@ -58,6 +64,9 @@ class GoProStreamer:
     def _tray_hide_preview(self, icon, item) -> None:
         self._show_preview(False)
 
+    def _tray_open_settings(self, icon, item) -> None:
+        open_settings_dialog(self.settings, on_save=self._update_settings)
+
     def _tray_quit(self, icon, item) -> None:
         self.stop_event.set()
         self.running = False
@@ -65,6 +74,8 @@ class GoProStreamer:
 
     def _start_tray(self) -> None:
         menu = pystray.Menu(
+            pystray.MenuItem("Paramètres", self._tray_open_settings),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Afficher l'aperçu", self._tray_show_preview),
             pystray.MenuItem("Masquer l'aperçu", self._tray_hide_preview),
             pystray.Menu.SEPARATOR,

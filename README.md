@@ -17,6 +17,8 @@ Capture le flux webcam de la GoPro et l'expose comme une webcam virtuelle pour O
 - ✅ Sortie webcam virtuelle compatible OBS (pyvirtualcam)
 - ✅ Bascule automatique vers un aperçu local si OBS/virtualcam absent
 - ✅ Icône dans la zone de notification avec `Afficher`, `Masquer` et `Quitter`
+- ✅ Menu `Paramètres` dans la zone de notification pour activer le lancement au démarrage
+- ✅ Choix du lancement avec ou sans aperçu local
 - ✅ Option `-c/--chrono` pour superposer un chronomètre
 - ✅ Réglages optimisés faible-latence et lecture UDP via OpenCV
 
@@ -44,10 +46,19 @@ Capture le flux webcam de la GoPro et l'expose comme une webcam virtuelle pour O
 	  ```bash
 	  python main.py --view -c
 	  ```
+	- Lancer sans aperçu local :
+	  ```bash
+	  python main.py --no-view
+	  ```
 	- Lancer pour OBS (mode par défaut) :
 	  ```bash
 	  python main.py
 	  ```
+
+4. **Réglages rapides**
+	- Clique sur l'icône dans la zone de notification
+	- Ouvre `Paramètres`
+	- Active ou désactive le lancement au démarrage et l'aperçu local
 
 ## 🔧 Packaging en .exe (Windows)
 Utilise PyInstaller pour créer un exécutable. Exemple:
