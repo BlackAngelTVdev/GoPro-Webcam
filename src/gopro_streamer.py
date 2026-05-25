@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import ctypes
 import os
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 import pyvirtualcam
 import pystray
 from PIL import Image, ImageDraw
 
 os.environ["OPENCV_LOG_LEVEL"] = "OFF"
+os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "0"
+os.environ["OPENCV_FFMPEG_DEBUG"] = "0"
 os.environ["AV_LOG_FORCE_NOCOLOR"] = "1"
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32|analyzeduration;0"
 
@@ -32,7 +38,7 @@ class GoProStreamer:
         self.api = GoProAPI()
         self.latest_frame = None
         self.frame_lock = threading.Lock()
-        self.frame_event = threading.Event()
+        self.frame_seq = 0
         self.start_time = None
         self.window_title = "GoPro Live - Aperçu local"
         self.tray_icon = None
@@ -45,8 +51,50 @@ class GoProStreamer:
     def _update_settings(self, updated_settings: AppSettings) -> None:
         self.settings = updated_settings
 
+    def _get_asset_path(self, *parts: str) -> Path:
+        base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+        return base_path / "src" / "asset" / Path(*parts)
+
+    def _apply_preview_window_icon(self, window_title: str) -> None:
+        if os.name != "nt":
+            return
+
+        icon_path = self._get_asset_path("icon.ico")
+        if not icon_path.exists():
+            return
+
+        user32 = ctypes.windll.user32
+        image_handle = ctypes.windll.user32.LoadImageW(
+            None,
+            str(icon_path),
+            1,
+            0,
+            0,
+            0x0010 | 0x0040,
+        )
+        if not image_handle:
+            return
+
+        window_handle = None
+        for _ in range(20):
+            window_handle = user32.FindWindowW(None, window_title)
+            if window_handle:
+                break
+            time.sleep(0.05)
+
+        if not window_handle:
+            return
+
+        user32.SendMessageW(window_handle, 0x0080, 0, image_handle)
+        user32.SendMessageW(window_handle, 0x0080, 1, image_handle)
+
     def _create_tray_image(self) -> Image.Image:
-        image = Image.new("RGB", (64, 64), "black")
+        icon_path = self._get_asset_path("icon.png")
+        if icon_path.exists():
+            with Image.open(icon_path) as icon_image:
+                return icon_image.convert("RGBA")
+
+        image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         draw.rounded_rectangle((8, 8, 56, 56), radius=12, fill=(25, 120, 255))
         draw.text((20, 19), "G", fill="white")
@@ -67,10 +115,59 @@ class GoProStreamer:
     def _tray_open_settings(self, icon, item) -> None:
         open_settings_dialog(self.settings, on_save=self._update_settings)
 
+    def _build_restart_command(self) -> list[str]:
+        if getattr(sys, "frozen", False):
+            return [sys.executable, *sys.argv[1:]]
+
+        script_path = Path(__file__).resolve().parents[1] / "main.py"
+        return [sys.executable, str(script_path), *sys.argv[1:]]
+
+    def _tray_restart(self, icon, item) -> None:
+        try:
+            subprocess.Popen(
+                self._build_restart_command(),
+                cwd=str(Path.cwd()),
+            )
+        except Exception as exc:
+            print(f"[-] Impossible de redémarrer l'application : {exc}")
+            return
+
+        self.stop_event.set()
+        self.running = False
+        icon.stop()
+
     def _tray_quit(self, icon, item) -> None:
         self.stop_event.set()
         self.running = False
         icon.stop()
+
+    def _open_stream_capture(self, stream_url: str) -> cv2.VideoCapture | None:
+        cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+
+        if cap.isOpened():
+            if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            return cap
+
+        cap.release()
+        return None
+
+    def enqueue_frames(self, cap) -> None:
+        while self.running and not self.stop_event.is_set():
+            try:
+                ret, frame = cap.read()
+            except cv2.error:
+                break
+
+            if not ret:
+                if self.stop_event.is_set():
+                    break
+                time.sleep(0.001)
+                continue
+
+            with self.frame_lock:
+                self.latest_frame = frame
+                self.frame_seq += 1
 
     def _start_tray(self) -> None:
         menu = pystray.Menu(
@@ -78,6 +175,8 @@ class GoProStreamer:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Afficher l'aperçu", self._tray_show_preview),
             pystray.MenuItem("Masquer l'aperçu", self._tray_hide_preview),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Redémarrer", self._tray_restart),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quitter", self._tray_quit),
         )
@@ -98,23 +197,6 @@ class GoProStreamer:
         except Exception:
             return "minimize"
 
-    def enqueue_frames(self, cap) -> None:
-        while self.running and not self.stop_event.is_set():
-            try:
-                ret, frame = cap.read()
-            except cv2.error:
-                break
-
-            if not ret:
-                if self.stop_event.is_set():
-                    break
-                time.sleep(0.005)
-                continue
-
-            with self.frame_lock:
-                self.latest_frame = frame
-            self.frame_event.set()
-
     def _draw_chrono(self, frame):
         if not self.show_chrono:
             return frame
@@ -131,65 +213,50 @@ class GoProStreamer:
         cv2.putText(frame, label, (32, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
         return frame
 
-    def _run_local_preview(self, window_title: str = "GoPro Live - Aperçu local") -> None:
-        print("[+] Bascule automatique vers l'aperçu local.")
+    def _handle_preview_window(self, frame, window_title: str) -> bool:
+        cv2.imshow(window_title, frame)
+        self._apply_preview_window_icon(window_title)
+        self.preview_window_open = True
 
-        while self.running and not self.stop_event.is_set():
-            if not self.frame_event.wait(timeout=0.05):
-                continue
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
+            decision = self._ask_close_or_minimize()
+            if decision == "close":
+                self.stop_event.set()
+                return False
+            self._show_preview(False)
+            return True
 
-            with self.frame_lock:
-                frame = None if self.latest_frame is None else self.latest_frame.copy()
-                self.frame_event.clear()
+        try:
+            visible = cv2.getWindowProperty(window_title, cv2.WND_PROP_VISIBLE)
+        except cv2.error:
+            visible = 0
 
-            if frame is None:
-                continue
+        if visible < 1 and not self.close_prompt_active:
+            self.close_prompt_active = True
+            decision = self._ask_close_or_minimize()
+            if decision == "close":
+                self.stop_event.set()
+                return False
+            self._show_preview(False)
+            self.preview_window_open = False
+            self.close_prompt_active = False
+            return True
 
-            frame = self._draw_chrono(frame)
-            cv2.imshow(window_title, frame)
-            self.preview_window_open = True
+        if visible >= 1:
+            self.close_prompt_active = False
 
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                decision = self._ask_close_or_minimize()
-                if decision == "close":
-                    self.stop_event.set()
-                    break
-                self._show_preview(False)
-                continue
+        return True
 
-            try:
-                visible = cv2.getWindowProperty(window_title, cv2.WND_PROP_VISIBLE)
-            except cv2.error:
-                visible = 0
+    def _run_preview_loop(self) -> None:
+        return
 
-            if visible < 1 and not self.close_prompt_active:
-                self.close_prompt_active = True
-                decision = self._ask_close_or_minimize()
-                if decision == "close":
-                    self.stop_event.set()
-                    break
-                self._show_preview(False)
-                self.preview_window_open = False
-                self.close_prompt_active = False
-                continue
+    def _get_latest_frame(self, last_seq: int) -> tuple[int, object | None]:
+        with self.frame_lock:
+            if self.frame_seq == last_seq or self.latest_frame is None:
+                return last_seq, None
 
-            if visible >= 1:
-                self.close_prompt_active = False
-
-    def _run_preview_if_enabled(self) -> None:
-        if self.preview_enabled:
-            self._run_local_preview(self.window_title)
-
-    def _run_headless_without_virtualcam(self) -> None:
-        print("[+] Mode sans webcam virtuelle actif. Utilise l'icône de notification pour afficher l'aperçu ou quitter.")
-
-        while self.running and not self.stop_event.is_set():
-            if self.preview_enabled:
-                self._run_local_preview(self.window_title)
-                continue
-
-            time.sleep(0.1)
+            return self.frame_seq, self.latest_frame.copy()
 
     def start(self) -> None:
         print(f"[+] Initialisation de la GoPro ({self.res}p)...")
@@ -207,18 +274,17 @@ class GoProStreamer:
         keep_alive_thread.start()
 
         print("[+] Connexion au flux vidéo (Attente de l'image clé...)")
-        cap = cv2.VideoCapture(STREAM_URL, cv2.CAP_FFMPEG)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000)
-        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000)
+        cap = self._open_stream_capture(STREAM_URL)
 
-        if FFMPEG_CAPTURE_OPTIONS:
-            cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_NONE)
-
-        if not cap.isOpened():
+        if cap is None:
             print("[-] Échec de l'ouverture du flux UDP.")
             self.stop_event.set()
             return
+
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        if FFMPEG_CAPTURE_OPTIONS and hasattr(cv2, "CAP_PROP_HW_ACCELERATION"):
+            cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_NONE)
 
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -241,54 +307,22 @@ class GoProStreamer:
                 print(f"[+] Webcam virtuelle active : {cam.device}")
                 print("[+] Mode Invisible actif. Fais Ctrl+C dans le terminal pour quitter.")
 
+                last_seq = -1
+
                 while self.running and not self.stop_event.is_set():
-                    if not self.frame_event.wait(timeout=0.05):
-                        continue
-
-                    with self.frame_lock:
-                        frame = None if self.latest_frame is None else self.latest_frame.copy()
-                        self.frame_event.clear()
-
+                    last_seq, frame = self._get_latest_frame(last_seq)
                     if frame is None:
+                        time.sleep(0.001)
                         continue
 
                     frame = self._draw_chrono(frame)
                     cam.send(frame)
-                    cam.sleep_until_next_frame()
 
                     if self.preview_enabled:
-                        cv2.imshow(self.window_title, frame)
-                        self.preview_window_open = True
+                        if not self._handle_preview_window(frame, self.window_title):
+                            break
 
-                        key = cv2.waitKey(1) & 0xFF
-                        if key == ord("q"):
-                            decision = self._ask_close_or_minimize()
-                            if decision == "close":
-                                self.stop_event.set()
-                                break
-                            self._show_preview(False)
-                            continue
-
-                        try:
-                            visible = cv2.getWindowProperty(self.window_title, cv2.WND_PROP_VISIBLE)
-                        except cv2.error:
-                            visible = 0
-
-                        if visible < 1 and not self.close_prompt_active:
-                            self.close_prompt_active = True
-                            decision = self._ask_close_or_minimize()
-                            if decision == "close":
-                                self.stop_event.set()
-                                break
-                            self._show_preview(False)
-                            self.preview_window_open = False
-                            self.close_prompt_active = False
-                            continue
-
-                        if visible >= 1:
-                            self.close_prompt_active = False
-
-                    elif self.preview_close_requested and self.preview_window_open:
+                    if self.preview_close_requested and self.preview_window_open:
                         try:
                             cv2.destroyWindow(self.window_title)
                         except cv2.error:
@@ -302,15 +336,21 @@ class GoProStreamer:
             print(f"[-] Webcam virtuelle indisponible : {exc}")
             if self.preview_enabled:
                 print("[+] Aperçu local activé.")
-                self._run_local_preview(self.window_title)
+                last_seq = -1
+                while self.running and not self.stop_event.is_set():
+                    last_seq, frame = self._get_latest_frame(last_seq)
+                    if frame is None:
+                        time.sleep(0.001)
+                        continue
+                    frame = self._draw_chrono(frame)
+                    if not self._handle_preview_window(frame, self.window_title):
+                        break
             else:
                 self._run_headless_without_virtualcam()
         finally:
             print("[+] Arrêt proprement...")
             self.running = False
             self.stop_event.set()
-            if reader_thread.is_alive():
-                reader_thread.join(timeout=1.0)
             cap.release()
             try:
                 cv2.destroyAllWindows()
