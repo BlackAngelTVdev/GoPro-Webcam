@@ -2,3 +2,5 @@ requests
 opencv-python
 pyvirtualcam
 pyinstaller
+pystray
+Pillow

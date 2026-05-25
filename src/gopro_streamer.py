@@ -6,6 +6,8 @@ import threading
 import time
 
 import pyvirtualcam
+import pystray
+from PIL import Image, ImageDraw
 
 os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 os.environ["AV_LOG_FORCE_NOCOLOR"] = "1"
@@ -22,13 +24,71 @@ class GoProStreamer:
         self.running = True
         self.stop_event = threading.Event()
         self.res = res
-        self.show_preview = show_preview
+        self.preview_enabled = show_preview
         self.show_chrono = show_chrono
         self.api = GoProAPI()
         self.latest_frame = None
         self.frame_lock = threading.Lock()
         self.frame_event = threading.Event()
         self.start_time = None
+        self.window_title = "GoPro Live - Aperçu local"
+        self.window_exists = False
+        self.tray_icon = None
+        self.tray_ready = threading.Event()
+        self.preview_lock = threading.Lock()
+
+    def _create_tray_image(self) -> Image.Image:
+        image = Image.new("RGB", (64, 64), "black")
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((8, 8, 56, 56), radius=12, fill=(25, 120, 255))
+        draw.text((20, 19), "G", fill="white")
+        return image
+
+    def _show_preview(self, enabled: bool) -> None:
+        with self.preview_lock:
+            self.preview_enabled = enabled
+
+        if not enabled:
+            try:
+                cv2.destroyWindow(self.window_title)
+            except cv2.error:
+                pass
+            self.window_exists = False
+
+    def _tray_show_preview(self, icon, item) -> None:
+        self._show_preview(True)
+
+    def _tray_hide_preview(self, icon, item) -> None:
+        self._show_preview(False)
+
+    def _tray_quit(self, icon, item) -> None:
+        self.stop_event.set()
+        self.running = False
+        icon.stop()
+
+    def _start_tray(self) -> None:
+        menu = pystray.Menu(
+            pystray.MenuItem("Afficher l'aperçu", self._tray_show_preview),
+            pystray.MenuItem("Masquer l'aperçu", self._tray_hide_preview),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Quitter", self._tray_quit),
+        )
+        self.tray_icon = pystray.Icon("GoPro-Webcam", self._create_tray_image(), "GoPro-Webcam", menu)
+        self.tray_ready.set()
+        self.tray_icon.run()
+
+    def _ask_close_or_minimize(self) -> str:
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+
+            root = tk.Tk()
+            root.withdraw()
+            minimize = messagebox.askyesno("GoPro-Webcam", "Fermer l'application ?\n\nOui = quitter\nNon = réduire dans la zone de notification")
+            root.destroy()
+            return "close" if minimize else "minimize"
+        except Exception:
+            return "minimize"
 
     def enqueue_frames(self, cap) -> None:
         while self.running and not self.stop_event.is_set():
@@ -79,8 +139,33 @@ class GoProStreamer:
 
             frame = self._draw_chrono(frame)
             cv2.imshow(window_title, frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
+            self.window_exists = True
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                decision = self._ask_close_or_minimize()
+                if decision == "close":
+                    self.stop_event.set()
+                    break
+                self._show_preview(False)
+                continue
+
+            try:
+                visible = cv2.getWindowProperty(window_title, cv2.WND_PROP_VISIBLE)
+            except cv2.error:
+                visible = 0
+
+            if visible < 1:
+                decision = self._ask_close_or_minimize()
+                if decision == "close":
+                    self.stop_event.set()
+                    break
+                self._show_preview(False)
+                continue
+
+    def _run_preview_if_enabled(self) -> None:
+        if self.preview_enabled:
+            self._run_local_preview(self.window_title)
 
     def start(self) -> None:
         print(f"[+] Initialisation de la GoPro ({self.res}p)...")
@@ -120,6 +205,10 @@ class GoProStreamer:
         reader_thread = threading.Thread(target=self.enqueue_frames, args=(cap,), daemon=True)
         reader_thread.start()
 
+        tray_thread = threading.Thread(target=self._start_tray, daemon=True)
+        tray_thread.start()
+        self.tray_ready.wait(timeout=2.0)
+
         self.start_time = time.time()
         print(f"[+] Initialisation de la Webcam Virtuelle OBS ({width}x{height} @ {DEFAULT_FPS}fps)...")
 
@@ -143,16 +232,37 @@ class GoProStreamer:
                     cam.send(frame)
                     cam.sleep_until_next_frame()
 
-                    if self.show_preview:
-                        cv2.imshow("GoPro Live - Aperçu local", frame)
-                        if cv2.waitKey(1) & 0xFF == ord("q"):
-                            break
+                    if self.preview_enabled:
+                        cv2.imshow(self.window_title, frame)
+                        self.window_exists = True
+
+                        key = cv2.waitKey(1) & 0xFF
+                        if key == ord("q"):
+                            decision = self._ask_close_or_minimize()
+                            if decision == "close":
+                                self.stop_event.set()
+                                break
+                            self._show_preview(False)
+                            continue
+
+                        try:
+                            visible = cv2.getWindowProperty(self.window_title, cv2.WND_PROP_VISIBLE)
+                        except cv2.error:
+                            visible = 0
+
+                        if visible < 1:
+                            decision = self._ask_close_or_minimize()
+                            if decision == "close":
+                                self.stop_event.set()
+                                break
+                            self._show_preview(False)
+                            continue
 
         except KeyboardInterrupt:
             print("\n[+] Arrêt demandé par l'utilisateur (Ctrl+C).")
         except Exception as exc:
             print(f"[-] Webcam virtuelle indisponible, aperçu local activé : {exc}")
-            self._run_local_preview()
+            self._run_preview_if_enabled()
         finally:
             print("[+] Arrêt proprement...")
             self.running = False
@@ -161,5 +271,10 @@ class GoProStreamer:
                 reader_thread.join(timeout=1.0)
             cap.release()
             cv2.destroyAllWindows()
+            if self.tray_icon is not None:
+                try:
+                    self.tray_icon.stop()
+                except Exception:
+                    pass
             self.api.stop_webcam()
             print("[+] Terminé.")

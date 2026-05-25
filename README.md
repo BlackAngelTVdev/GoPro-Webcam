@@ -16,6 +16,7 @@ Capture le flux webcam de la GoPro et l'expose comme une webcam virtuelle pour O
 - ✅ Démarrage/arrêt automatique de la GoPro en mode Webcam
 - ✅ Sortie webcam virtuelle compatible OBS (pyvirtualcam)
 - ✅ Bascule automatique vers un aperçu local si OBS/virtualcam absent
+- ✅ Icône dans la zone de notification avec `Afficher`, `Masquer` et `Quitter`
 - ✅ Option `-c/--chrono` pour superposer un chronomètre
 - ✅ Réglages optimisés faible-latence et lecture UDP via OpenCV
 
