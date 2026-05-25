@@ -62,6 +62,39 @@ class GoProStreamer:
         cv2.putText(frame, label, (32, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
         return frame
 
+    def _is_virtual_camera_missing(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        return (
+            "obs virtual camera device not found" in message
+            or "'obs' backend" in message
+            or "no camera registered" in message
+            or ("backend" in message and "camera" in message)
+        )
+
+    def _run_preview_only(self, width: int, height: int) -> None:
+        self.show_preview = True
+        print(f"[+] Mode Preview activé automatiquement ({width}x{height} @ {self.fps}fps). Appuie sur 'q' pour quitter.")
+
+        try:
+            while self.running and not self.stop_event.is_set():
+                if not self.frame_event.wait(timeout=1.0):
+                    time.sleep(0.001)
+                    continue
+
+                with self.frame_lock:
+                    frame = None if self.latest_frame is None else self.latest_frame.copy()
+                    self.frame_event.clear()
+
+                if frame is None:
+                    continue
+
+                frame = self._draw_chrono(frame)
+                cv2.imshow("GoPro Live - Aperçu local", frame)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+        finally:
+            cv2.destroyAllWindows()
+
     def start(self) -> None:
         print(f"[+] Initialisation de la GoPro ({self.res}p)...")
 
@@ -137,6 +170,10 @@ class GoProStreamer:
         except KeyboardInterrupt:
             print("\n[+] Arrêt demandé par l'utilisateur (Ctrl+C).")
         except Exception as exc:
+            if not self.show_preview and self._is_virtual_camera_missing(exc):
+                print("[!] Caméra virtuelle OBS introuvable, bascule automatique vers l'aperçu local.")
+                self._run_preview_only(width, height)
+                return
             print(f"[-] Erreur critique : {exc}")
         finally:
             print("[+] Arrêt proprement...")
