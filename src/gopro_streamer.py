@@ -34,9 +34,15 @@ class GoProStreamer:
 
     def enqueue_frames(self, cap) -> None:
         while self.running and not self.stop_event.is_set():
-            ret, frame = cap.read()
+            try:
+                ret, frame = cap.read()
+            except cv2.error:
+                break
+
             if not ret:
-                time.sleep(0.02)
+                if self.stop_event.is_set():
+                    break
+                time.sleep(0.005)
                 continue
 
             with self.frame_lock:
@@ -78,8 +84,7 @@ class GoProStreamer:
 
         try:
             while self.running and not self.stop_event.is_set():
-                if not self.frame_event.wait(timeout=1.0):
-                    time.sleep(0.001)
+                if not self.frame_event.wait(timeout=0.05):
                     continue
 
                 with self.frame_lock:
@@ -151,8 +156,7 @@ class GoProStreamer:
                     print("[+] Mode Invisible actif. Fais Ctrl+C dans le terminal pour quitter.")
 
                 while self.running and not self.stop_event.is_set():
-                    if not self.frame_event.wait(timeout=1.0):
-                        time.sleep(0.001)
+                    if not self.frame_event.wait(timeout=0.05):
                         continue
 
                     with self.frame_lock:
@@ -174,7 +178,7 @@ class GoProStreamer:
         except KeyboardInterrupt:
             print("\n[+] Arrêt demandé par l'utilisateur (Ctrl+C).")
         except Exception as exc:
-            if not self.show_preview and self._is_virtual_camera_missing(exc):
+            if self._is_virtual_camera_missing(exc):
                 print("[!] Caméra virtuelle OBS introuvable, bascule automatique vers l'aperçu local.")
                 self._run_preview_only(width, height)
                 return
@@ -183,6 +187,8 @@ class GoProStreamer:
             print("[+] Arrêt proprement...")
             self.running = False
             self.stop_event.set()
+            if reader_thread.is_alive():
+                reader_thread.join(timeout=1.0)
             cap.release()
             if self.show_preview:
                 cv2.destroyAllWindows()

@@ -10,6 +10,6 @@ FOV_MAP = {
     "linear": 4,
 }
 
-DEFAULT_RESOLUTION = 1080
+DEFAULT_RESOLUTION = 720
 DEFAULT_FPS = 30
-DEFAULT_FOV = "wide"
+DEFAULT_FOV = "superview"
