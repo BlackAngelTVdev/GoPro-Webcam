@@ -107,7 +107,7 @@ jobs:
             while IFS=$'\t' read -r sha subject author; do
               safe_subject=$(echo "$subject" | sed 's/|/\\|/g')
               safe_author=$(echo "$author" | sed 's/|/\\|/g')
-              commits_table+="| \\`$sha\\` | $safe_subject | $safe_author |\\n"
+              commits_table+="| $sha | $safe_subject | $safe_author |\\n"
             done <<< "$log_lines"
           fi
 
