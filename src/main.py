@@ -12,6 +12,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fps", type=int, default=DEFAULT_FPS, help="Frames par seconde")
     parser.add_argument("--fov", type=str, choices=["wide", "narrow", "superview", "linear"], default=DEFAULT_FOV, help="Lentille")
     parser.add_argument("--view", action="store_true", help="Afficher la fenêtre")
+    parser.add_argument("-c", "--chrono", action="store_true", help="Afficher un chronomètre sur le flux")
     return parser
 
 
@@ -22,6 +23,7 @@ def main() -> None:
         fov=args.fov,
         fps=args.fps,
         show_preview=args.view,
+        show_chrono=args.chrono,
     )
     streamer.start()
 
