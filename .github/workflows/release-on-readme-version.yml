@@ -79,13 +79,71 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Generate release notes body
+        id: notes
+        shell: bash
+        env:
+          CURR_VER: ${{ needs.check-version.outputs.curr_ver }}
+        run: |
+          set -euo pipefail
+
+          prev_tag=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+          if [ -n "$prev_tag" ]; then
+            range="$prev_tag..HEAD"
+            range_label="Changes since $prev_tag"
+          else
+            first_commit=$(git rev-list --max-parents=0 HEAD | tail -n 1)
+            range="$first_commit..HEAD"
+            range_label="Changes since initial commit"
+          fi
+
+          commits_table="| Commit | Message | Author |\n|---|---|---|\n"
+          log_lines=$(git log "$range" --reverse --pretty=format:'%h%x09%s%x09%an' || true)
+
+          if [ -z "$log_lines" ]; then
+            commits_table+="| - | No commits found in selected range | - |\n"
+          else
+            while IFS=$'\t' read -r sha subject author; do
+              safe_subject=$(echo "$subject" | sed 's/|/\\|/g')
+              safe_author=$(echo "$author" | sed 's/|/\\|/g')
+              commits_table+="| \\`$sha\\` | $safe_subject | $safe_author |\\n"
+            done <<< "$log_lines"
+          fi
+
+          authors_list=$(git log "$range" --pretty=format:'- %an' | sort -u || true)
+          authors_count=$(git log "$range" --pretty=format:'%an' | sort -u | wc -l | tr -d ' ' || true)
+          if [ -z "$authors_list" ]; then
+            authors_list="- Unknown"
+            authors_count="1"
+          fi
+
+          {
+            echo "## GoPro-Webcam $CURR_VER - Detailed release notes"
+            echo
+            echo "### Summary"
+            echo "$range_label"
+            echo
+            echo "### Commits"
+            printf "%b" "$commits_table"
+            echo
+            echo "### Release Contributors ($authors_count)"
+            echo "$authors_list"
+          } > RELEASE_BODY.md
+
+          {
+            echo "body<<EOF"
+            cat RELEASE_BODY.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         id: create_release
         uses: actions/create-release@v1
         with:
           tag_name: ${{ needs.check-version.outputs.curr_ver }}
-          release_name: Release ${{ needs.check-version.outputs.curr_ver }}
-          body: "Automated release triggered by README version change"
+          release_name: GoPro-Webcam ${{ needs.check-version.outputs.curr_ver }} - Full changelog and builds
+          body: ${{ steps.notes.outputs.body }}
           draft: false
           prerelease: false
         env:
