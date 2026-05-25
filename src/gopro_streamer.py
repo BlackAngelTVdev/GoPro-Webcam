@@ -9,10 +9,11 @@ import pyvirtualcam
 
 os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 os.environ["AV_LOG_FORCE_NOCOLOR"] = "1"
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32|analyzeduration;0"
 
 import cv2
 
-from .config import DEFAULT_FOV, DEFAULT_FPS, DEFAULT_RESOLUTION, STREAM_URL
+from .config import DEFAULT_FOV, DEFAULT_FPS, DEFAULT_RESOLUTION, FFMPEG_CAPTURE_OPTIONS, STREAM_URL
 from .gopro_api import GoProAPI
 
 
@@ -103,8 +104,6 @@ class GoProStreamer:
                 print("[-] La GoPro a refusé de démarrer.")
                 return
 
-            time.sleep(1.0)
-
             if self.fov_name != "wide":
                 print(f"[+] Application du mode de vue : {self.fov_name}...")
                 if not self.api.set_fov(self.fov_name):
@@ -120,6 +119,11 @@ class GoProStreamer:
         print("[+] Connexion au flux vidéo (Attente de l'image clé...)")
         cap = cv2.VideoCapture(STREAM_URL, cv2.CAP_FFMPEG)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000)
+        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000)
+
+        if FFMPEG_CAPTURE_OPTIONS:
+            cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_NONE)
 
         if not cap.isOpened():
             print("[-] Échec de l'ouverture du flux UDP.")

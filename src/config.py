@@ -1,5 +1,7 @@
 GOPRO_IP = "172.24.105.51"
-STREAM_URL = "udp://@0.0.0.0:8554?overrun_nonfatal=1&fifo_size=50000000"
+STREAM_URL = "udp://@0.0.0.0:8554?overrun_nonfatal=1&fifo_size=1000000"
+
+FFMPEG_CAPTURE_OPTIONS = "fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32|analyzeduration;0"
 
 FOV_MAP = {
     "wide": 0,
