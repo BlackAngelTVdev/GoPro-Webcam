@@ -32,10 +32,11 @@ class GoProStreamer:
         self.frame_event = threading.Event()
         self.start_time = None
         self.window_title = "GoPro Live - Aperçu local"
-        self.window_exists = False
         self.tray_icon = None
         self.tray_ready = threading.Event()
         self.preview_lock = threading.Lock()
+        self.preview_window_open = False
+        self.close_prompt_active = False
 
     def _create_tray_image(self) -> Image.Image:
         image = Image.new("RGB", (64, 64), "black")
@@ -47,13 +48,6 @@ class GoProStreamer:
     def _show_preview(self, enabled: bool) -> None:
         with self.preview_lock:
             self.preview_enabled = enabled
-
-        if not enabled:
-            try:
-                cv2.destroyWindow(self.window_title)
-            except cv2.error:
-                pass
-            self.window_exists = False
 
     def _tray_show_preview(self, icon, item) -> None:
         self._show_preview(True)
@@ -139,7 +133,7 @@ class GoProStreamer:
 
             frame = self._draw_chrono(frame)
             cv2.imshow(window_title, frame)
-            self.window_exists = True
+            self.preview_window_open = True
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
@@ -155,13 +149,19 @@ class GoProStreamer:
             except cv2.error:
                 visible = 0
 
-            if visible < 1:
+            if visible < 1 and not self.close_prompt_active:
+                self.close_prompt_active = True
                 decision = self._ask_close_or_minimize()
                 if decision == "close":
                     self.stop_event.set()
                     break
                 self._show_preview(False)
+                self.preview_window_open = False
+                self.close_prompt_active = False
                 continue
+
+            if visible >= 1:
+                self.close_prompt_active = False
 
     def _run_preview_if_enabled(self) -> None:
         if self.preview_enabled:
@@ -234,7 +234,7 @@ class GoProStreamer:
 
                     if self.preview_enabled:
                         cv2.imshow(self.window_title, frame)
-                        self.window_exists = True
+                        self.preview_window_open = True
 
                         key = cv2.waitKey(1) & 0xFF
                         if key == ord("q"):
@@ -250,13 +250,19 @@ class GoProStreamer:
                         except cv2.error:
                             visible = 0
 
-                        if visible < 1:
+                        if visible < 1 and not self.close_prompt_active:
+                            self.close_prompt_active = True
                             decision = self._ask_close_or_minimize()
                             if decision == "close":
                                 self.stop_event.set()
                                 break
                             self._show_preview(False)
+                            self.preview_window_open = False
+                            self.close_prompt_active = False
                             continue
+
+                        if visible >= 1:
+                            self.close_prompt_active = False
 
         except KeyboardInterrupt:
             print("\n[+] Arrêt demandé par l'utilisateur (Ctrl+C).")
@@ -270,7 +276,10 @@ class GoProStreamer:
             if reader_thread.is_alive():
                 reader_thread.join(timeout=1.0)
             cap.release()
-            cv2.destroyAllWindows()
+            try:
+                cv2.destroyAllWindows()
+            except cv2.error:
+                pass
             if self.tray_icon is not None:
                 try:
                     self.tray_icon.stop()
