@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import ctypes
 import os
+import socket
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 import pyvirtualcam
 import pystray
 from PIL import Image, ImageDraw
 
 os.environ["OPENCV_LOG_LEVEL"] = "OFF"
+os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "0"
+os.environ["OPENCV_FFMPEG_DEBUG"] = "0"
 os.environ["AV_LOG_FORCE_NOCOLOR"] = "1"
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32|analyzeduration;0"
 
@@ -45,8 +52,50 @@ class GoProStreamer:
     def _update_settings(self, updated_settings: AppSettings) -> None:
         self.settings = updated_settings
 
+    def _get_asset_path(self, *parts: str) -> Path:
+        base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+        return base_path / "src" / "asset" / Path(*parts)
+
+    def _apply_preview_window_icon(self, window_title: str) -> None:
+        if os.name != "nt":
+            return
+
+        icon_path = self._get_asset_path("icon.ico")
+        if not icon_path.exists():
+            return
+
+        user32 = ctypes.windll.user32
+        image_handle = ctypes.windll.user32.LoadImageW(
+            None,
+            str(icon_path),
+            1,
+            0,
+            0,
+            0x0010 | 0x0040,
+        )
+        if not image_handle:
+            return
+
+        window_handle = None
+        for _ in range(20):
+            window_handle = user32.FindWindowW(None, window_title)
+            if window_handle:
+                break
+            time.sleep(0.05)
+
+        if not window_handle:
+            return
+
+        user32.SendMessageW(window_handle, 0x0080, 0, image_handle)
+        user32.SendMessageW(window_handle, 0x0080, 1, image_handle)
+
     def _create_tray_image(self) -> Image.Image:
-        image = Image.new("RGB", (64, 64), "black")
+        icon_path = self._get_asset_path("icon.png")
+        if icon_path.exists():
+            with Image.open(icon_path) as icon_image:
+                return icon_image.convert("RGBA")
+
+        image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         draw.rounded_rectangle((8, 8, 56, 56), radius=12, fill=(25, 120, 255))
         draw.text((20, 19), "G", fill="white")
@@ -67,10 +116,75 @@ class GoProStreamer:
     def _tray_open_settings(self, icon, item) -> None:
         open_settings_dialog(self.settings, on_save=self._update_settings)
 
+    def _build_restart_command(self) -> list[str]:
+        if getattr(sys, "frozen", False):
+            return [sys.executable, *sys.argv[1:]]
+
+        script_path = Path(__file__).resolve().parents[1] / "main.py"
+        return [sys.executable, str(script_path), *sys.argv[1:]]
+
+    def _tray_restart(self, icon, item) -> None:
+        try:
+            subprocess.Popen(
+                self._build_restart_command(),
+                cwd=str(Path.cwd()),
+            )
+        except Exception as exc:
+            print(f"[-] Impossible de redémarrer l'application : {exc}")
+            return
+
+        self.stop_event.set()
+        self.running = False
+        icon.stop()
+
     def _tray_quit(self, icon, item) -> None:
         self.stop_event.set()
         self.running = False
         icon.stop()
+
+    def _wait_for_udp_packet(self, port: int = 8554) -> bool:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("0.0.0.0", port))
+            sock.settimeout(0.5)
+
+            print("[+] En attente des paquets UDP de la GoPro...")
+            while not self.stop_event.is_set():
+                try:
+                    sock.recvfrom(2048)
+                    return True
+                except socket.timeout:
+                    continue
+
+            return False
+        except OSError:
+            return True
+        finally:
+            sock.close()
+
+    def _open_stream_capture(self, stream_url: str) -> cv2.VideoCapture | None:
+        if not self._wait_for_udp_packet():
+            return None
+
+        time.sleep(1.0)
+
+        capture_params: list[int] = []
+        if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+            capture_params.extend([cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000])
+        if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+            capture_params.extend([cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000])
+
+        if capture_params:
+            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG, capture_params)
+        else:
+            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+
+        if cap.isOpened():
+            return cap
+
+        cap.release()
+        return None
 
     def _start_tray(self) -> None:
         menu = pystray.Menu(
@@ -78,6 +192,8 @@ class GoProStreamer:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Afficher l'aperçu", self._tray_show_preview),
             pystray.MenuItem("Masquer l'aperçu", self._tray_hide_preview),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Redémarrer", self._tray_restart),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quitter", self._tray_quit),
         )
@@ -147,6 +263,7 @@ class GoProStreamer:
 
             frame = self._draw_chrono(frame)
             cv2.imshow(window_title, frame)
+            self._apply_preview_window_icon(window_title)
             self.preview_window_open = True
 
             key = cv2.waitKey(1) & 0xFF
@@ -207,18 +324,17 @@ class GoProStreamer:
         keep_alive_thread.start()
 
         print("[+] Connexion au flux vidéo (Attente de l'image clé...)")
-        cap = cv2.VideoCapture(STREAM_URL, cv2.CAP_FFMPEG)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000)
-        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000)
+        cap = self._open_stream_capture(STREAM_URL)
 
-        if FFMPEG_CAPTURE_OPTIONS:
-            cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_NONE)
-
-        if not cap.isOpened():
+        if cap is None:
             print("[-] Échec de l'ouverture du flux UDP.")
             self.stop_event.set()
             return
+
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        if FFMPEG_CAPTURE_OPTIONS and hasattr(cv2, "CAP_PROP_HW_ACCELERATION"):
+            cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_NONE)
 
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -258,6 +374,7 @@ class GoProStreamer:
 
                     if self.preview_enabled:
                         cv2.imshow(self.window_title, frame)
+                        self._apply_preview_window_icon(self.window_title)
                         self.preview_window_open = True
 
                         key = cv2.waitKey(1) & 0xFF

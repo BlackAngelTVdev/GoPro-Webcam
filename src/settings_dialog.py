@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import threading
+import sys
 from typing import Callable
+from pathlib import Path
+
+from PIL import Image, ImageTk
 
 from .app_settings import AppSettings, apply_settings
 
 
 _dialog_lock = threading.Lock()
 _dialog_open = False
+
+
+def _get_icon_path() -> Path:
+    base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    return base_path / "src" / "asset" / "icon.png"
 
 
 def open_settings_dialog(initial_settings: AppSettings, on_save: Callable[[AppSettings], None] | None = None) -> None:
@@ -29,6 +38,13 @@ def open_settings_dialog(initial_settings: AppSettings, on_save: Callable[[AppSe
             root.title("Paramètres GoPro-Webcam")
             root.resizable(False, False)
             root.attributes("-topmost", True)
+
+            icon_path = _get_icon_path()
+            if icon_path.exists():
+                with Image.open(icon_path) as icon_image:
+                    icon_photo = ImageTk.PhotoImage(icon_image.convert("RGBA"), master=root)
+                root.iconphoto(True, icon_photo)
+                root._app_icon = icon_photo
 
             startup_var = tk.BooleanVar(value=initial_settings.launch_at_startup)
             view_var = tk.BooleanVar(value=initial_settings.launch_with_view)
