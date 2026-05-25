@@ -80,7 +80,9 @@ jobs:
   create-release:
     name: Create GitHub Release
     needs: check-version
-    if: needs.check-version.outputs.changed == 'true'
+        uses: actions/create-release@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -107,6 +109,8 @@ jobs:
     needs: create-release
     runs-on: ubuntu-latest
     if: needs.check-version.outputs.changed == 'true'
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -140,6 +144,8 @@ jobs:
     needs: create-release
     runs-on: macos-latest
     if: needs.check-version.outputs.changed == 'true'
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -173,6 +179,8 @@ jobs:
     needs: create-release
     runs-on: windows-latest
     if: needs.check-version.outputs.changed == 'true'
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
