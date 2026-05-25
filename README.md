@@ -1,4 +1,4 @@
-# 🚀 GoPro-Webcam vB1.04
+# 🚀 GoPro-Webcam vB1.05
 ![Stars](https://img.shields.io/github/stars/BlackAngelTVdev/GoPro-Webcam?style=for-the-badge&color=yellow)
 ![Commits](https://img.shields.io/github/commit-activity/m/BlackAngelTVdev/GoPro-Webcam?style=for-the-badge&color=blue)
 ![Issues](https://img.shields.io/github/issues/BlackAngelTVdev/GoPro-Webcam?style=for-the-badge&color=orange)
@@ -88,6 +88,12 @@ dist\\GoPro-Webcam.exe --view -c
 
 **BlackAngelTVdev**
 ![Follow](https://img.shields.io/github/followers/BlackAngelTVdev?label=Follow%20Me&style=social)
+
+---
+## 🆕 Ajouts récents
+- src/app_settings.py : nouveau module pour gérer la sauvegarde, le chargement et les valeurs par défaut des paramètres de l'application.
+- src/settings_dialog.py : interface/dialogue de paramètres pour modifier les réglages depuis l'application.
+- Création de plusieurs fichiers et améliorations (6 fichiers modifiés dans le dernier commit).
 
 ---
 ## 📄 Licence
