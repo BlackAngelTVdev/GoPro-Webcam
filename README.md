@@ -1,4 +1,4 @@
-# 🚀 GoPro-Webcam vB1.6
+# 🚀 GoPro-Webcam vB1.07
 ![Stars](https://img.shields.io/github/stars/BlackAngelTVdev/GoPro-Webcam?style=for-the-badge&color=yellow)
 ![Commits](https://img.shields.io/github/commit-activity/m/BlackAngelTVdev/GoPro-Webcam?style=for-the-badge&color=blue)
 ![Issues](https://img.shields.io/github/issues/BlackAngelTVdev/GoPro-Webcam?style=for-the-badge&color=orange)
