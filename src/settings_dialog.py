@@ -62,13 +62,13 @@ def open_settings_dialog(initial_settings: AppSettings, on_save: Callable[[AppSe
             view_check = tk.Checkbutton(frame, text="Lancer avec l'aperçu local", variable=view_var)
             view_check.grid(row=2, column=0, columnspan=2, sticky="w", pady=2)
 
-            network_label = tk.Label(frame, text="IP du PC qui envoie le flux réseau (optionnel)")
+            network_label = tk.Label(frame, text="IP du PC distant")
             network_label.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 2))
 
             network_entry = tk.Entry(frame, textvariable=network_host_var, width=30)
             network_entry.grid(row=4, column=0, columnspan=2, sticky="we", pady=(0, 6))
 
-            network_hint = tk.Label(frame, text="Si la GoPro n'est pas connectée, l'application essaiera ce flux en secours.", fg="#555555")
+            network_hint = tk.Label(frame, text="Sur le PC émetteur, c'est l'IP du PC récepteur. Sur le PC récepteur, c'est l'IP du PC émetteur.", fg="#555555")
             network_hint.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
             hint = tk.Label(frame, text="Les changements seront appliqués au prochain lancement.", fg="#555555")

@@ -5,23 +5,24 @@
 ![Forks](https://img.shields.io/github/forks/BlackAngelTVdev/GoPro-Webcam?style=for-the-badge&color=808080)
 ![Last Commit](https://img.shields.io/github/last-commit/BlackAngelTVdev/GoPro-Webcam?style=for-the-badge&color=blue)
 
-> Outil pour streamer une GoPro (Hero en mode Webcam) vers OBS ou un aperçu local.
+> Outil pour streamer une GoPro (Hero en mode Webcam) vers OBS, ou échanger un flux entre deux PC via le réseau.
 
 ---
 
 ## 🧐 Aperçu
-Capture le flux webcam de la GoPro et l'expose comme une webcam virtuelle pour OBS, avec option d'aperçu local, chronomètre et réglages orientés faible latence.
+Capture le flux webcam de la GoPro et l'expose comme une webcam virtuelle pour OBS. Si la GoPro n'est pas disponible, l'application passe en mode récepteur réseau. Si la GoPro est disponible, elle peut envoyer le flux vers un autre PC.
 
 ## ✨ Fonctionnalités
 - ✅ Démarrage/arrêt automatique de la GoPro en mode Webcam
 - ✅ Sortie webcam virtuelle compatible OBS (pyvirtualcam)
-- ✅ Bascule automatique vers un aperçu local si OBS/virtualcam absent
-- ✅ Champ réseau pour essayer un flux distant quand aucune GoPro n'est détectée
+- ✅ Démarrage direct dans la zone de notification, sans fenêtre principale
+- ✅ Mode émetteur si une GoPro est détectée, mode récepteur sinon
+- ✅ Champ IP du PC distant pour le mode réseau
 - ✅ Icône dans la zone de notification avec `Afficher`, `Masquer` et `Quitter`
 - ✅ Menu `Paramètres` dans la zone de notification pour activer le lancement au démarrage
 - ✅ Choix du lancement avec ou sans aperçu local
 - ✅ Option `-c/--chrono` pour superposer un chronomètre
-- ✅ Réglages optimisés faible-latence et lecture UDP via OpenCV
+- ✅ Réglages optimisés faible-latence et transport réseau TCP par frames JPEG
 
 ## 🛠 Tech Stack
 | Technologie | Usage |
@@ -59,8 +60,9 @@ Capture le flux webcam de la GoPro et l'expose comme une webcam virtuelle pour O
 4. **Réglages rapides**
 	- Clique sur l'icône dans la zone de notification
 	- Ouvre `Paramètres`
-	- Active ou désactive le lancement au démarrage et l'aperçu local
-	- Renseigne l'IP du PC qui fournit le flux réseau si tu veux un secours sans GoPro
+	- Renseigne l'IP du PC distant
+	- Sur le PC avec GoPro, c'est l'IP du récepteur
+	- Sur le PC sans GoPro, c'est l'IP de l'émetteur
 
 ## 🔧 Packaging en .exe (Windows)
 Utilise PyInstaller pour créer un exécutable. Exemple:
