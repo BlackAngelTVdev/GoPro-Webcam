@@ -22,6 +22,7 @@ STARTUP_REGISTRY_VALUE = "GoPro-Webcam"
 class AppSettings:
     launch_at_startup: bool = False
     launch_with_view: bool = False
+    network_stream_host: str = ""
 
 
 def _get_settings_dir() -> Path:
@@ -48,6 +49,7 @@ def load_settings() -> AppSettings:
     return AppSettings(
         launch_at_startup=bool(payload.get("launch_at_startup", False)),
         launch_with_view=bool(payload.get("launch_with_view", False)),
+        network_stream_host=str(payload.get("network_stream_host", "")).strip(),
     )
 
 

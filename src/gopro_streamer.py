@@ -3,14 +3,17 @@ from __future__ import annotations
 from datetime import timedelta
 import ctypes
 import os
+import socket
 import subprocess
 import sys
+import struct
 import threading
 import time
 from pathlib import Path
 
 import pyvirtualcam
 import pystray
+import numpy as np
 from PIL import Image, ImageDraw
 
 os.environ["OPENCV_LOG_LEVEL"] = "OFF"
@@ -22,7 +25,7 @@ os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "fflags;nobuffer|flags;low_delay|m
 import cv2
 
 from .app_settings import AppSettings
-from .config import DEFAULT_FPS, DEFAULT_RESOLUTION, FFMPEG_CAPTURE_OPTIONS, STREAM_URL
+from .config import DEFAULT_FPS, DEFAULT_RESOLUTION, FFMPEG_CAPTURE_OPTIONS, NETWORK_STREAM_PATH, NETWORK_STREAM_PORT, STREAM_URL
 from .gopro_api import GoProAPI
 from .settings_dialog import open_settings_dialog
 
@@ -47,6 +50,9 @@ class GoProStreamer:
         self.preview_window_open = False
         self.close_prompt_active = False
         self.preview_close_requested = False
+        self.local_webcam_active = False
+        self.network_send_socket: socket.socket | None = None
+        self.network_server_socket: socket.socket | None = None
 
     def _update_settings(self, updated_settings: AppSettings) -> None:
         self.settings = updated_settings
@@ -151,6 +157,155 @@ class GoProStreamer:
 
         cap.release()
         return None
+
+    def _wait_for_stream_capture(self, stream_url: str, timeout_seconds: float = 15.0) -> cv2.VideoCapture | None:
+        deadline = time.time() + timeout_seconds
+
+        while not self.stop_event.is_set() and time.time() < deadline:
+            cap = self._open_stream_capture(stream_url)
+            if cap is not None:
+                return cap
+            time.sleep(0.5)
+
+        return None
+
+    def _build_network_stream_url(self) -> str | None:
+        host = self.settings.network_stream_host.strip()
+        if not host:
+            return None
+
+        return f"http://{host}:{NETWORK_STREAM_PORT}/{NETWORK_STREAM_PATH}"
+
+    def _build_network_peer_host(self) -> str | None:
+        host = self.settings.network_stream_host.strip()
+        return host or None
+
+    def _close_network_sender(self) -> None:
+        if self.network_send_socket is not None:
+            try:
+                self.network_send_socket.close()
+            except OSError:
+                pass
+            self.network_send_socket = None
+
+    def _close_network_server(self) -> None:
+        if self.network_server_socket is not None:
+            try:
+                self.network_server_socket.close()
+            except OSError:
+                pass
+            self.network_server_socket = None
+
+    def _ensure_network_sender(self, peer_host: str) -> bool:
+        if self.network_send_socket is not None:
+            return True
+
+        try:
+            sender_socket = socket.create_connection((peer_host, NETWORK_STREAM_PORT), timeout=3.0)
+            sender_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self.network_send_socket = sender_socket
+            return True
+        except OSError:
+            self._close_network_sender()
+            return False
+
+    def _send_frame_to_peer(self, frame, peer_host: str) -> None:
+        if not self._ensure_network_sender(peer_host):
+            return
+
+        try:
+            ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if not ok:
+                return
+
+            payload = encoded.tobytes()
+            header = struct.pack("!I", len(payload))
+            self.network_send_socket.sendall(header + payload)
+        except OSError:
+            self._close_network_sender()
+
+    def _recv_exact(self, conn: socket.socket, size: int) -> bytes | None:
+        buffer = bytearray()
+
+        while len(buffer) < size and self.running and not self.stop_event.is_set():
+            try:
+                chunk = conn.recv(size - len(buffer))
+            except OSError:
+                return None
+
+            if not chunk:
+                return None
+
+            buffer.extend(chunk)
+
+        if len(buffer) != size:
+            return None
+
+        return bytes(buffer)
+
+    def _run_network_receiver(self, allowed_peer_ip: str | None) -> None:
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        try:
+            server_socket.bind(("0.0.0.0", NETWORK_STREAM_PORT))
+            server_socket.listen(1)
+            server_socket.settimeout(1.0)
+            self.network_server_socket = server_socket
+
+            while self.running and not self.stop_event.is_set():
+                try:
+                    conn, addr = server_socket.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+
+                peer_ip = addr[0]
+                if allowed_peer_ip and peer_ip != allowed_peer_ip:
+                    conn.close()
+                    continue
+
+                conn.settimeout(1.0)
+
+                try:
+                    while self.running and not self.stop_event.is_set():
+                        header = self._recv_exact(conn, 4)
+                        if header is None:
+                            break
+
+                        payload_size = struct.unpack("!I", header)[0]
+                        if payload_size <= 0:
+                            continue
+
+                        payload = self._recv_exact(conn, payload_size)
+                        if payload is None:
+                            break
+
+                        frame_array = np.frombuffer(payload, dtype=np.uint8)
+                        frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
+                        if frame is None:
+                            continue
+
+                        with self.frame_lock:
+                            self.latest_frame = frame
+                            self.frame_seq += 1
+                finally:
+                    conn.close()
+        finally:
+            try:
+                server_socket.close()
+            except OSError:
+                pass
+            if self.network_server_socket is server_socket:
+                self.network_server_socket = None
+
+    def _configure_capture(self, cap) -> None:
+        if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        if FFMPEG_CAPTURE_OPTIONS and hasattr(cv2, "CAP_PROP_HW_ACCELERATION"):
+            cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_NONE)
 
     def enqueue_frames(self, cap) -> None:
         while self.running and not self.stop_event.is_set():
@@ -259,45 +414,55 @@ class GoProStreamer:
             return self.frame_seq, self.latest_frame.copy()
 
     def start(self) -> None:
-        print(f"[+] Initialisation de la GoPro ({self.res}p)...")
-
-        try:
-            if not self.api.start_webcam(self.res):
-                print("[-] La GoPro a refusé de démarrer.")
-                return
-
-        except Exception as exc:
-            print(f"[-] Impossible de configurer la GoPro : {exc}")
-            return
-
-        keep_alive_thread = threading.Thread(target=self.api.keep_alive, args=(self.stop_event,), daemon=True)
-        keep_alive_thread.start()
-
-        print("[+] Connexion au flux vidéo (Attente de l'image clé...)")
-        cap = self._open_stream_capture(STREAM_URL)
-
-        if cap is None:
-            print("[-] Échec de l'ouverture du flux UDP.")
-            self.stop_event.set()
-            return
-
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-        if FFMPEG_CAPTURE_OPTIONS and hasattr(cv2, "CAP_PROP_HW_ACCELERATION"):
-            cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_NONE)
-
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-        if width == 0 or height == 0:
-            width, height = (1920, 1080) if self.res == 1080 else (1280, 720)
-
-        reader_thread = threading.Thread(target=self.enqueue_frames, args=(cap,), daemon=True)
-        reader_thread.start()
-
         tray_thread = threading.Thread(target=self._start_tray, daemon=True)
         tray_thread.start()
         self.tray_ready.wait(timeout=2.0)
+
+        print(f"[+] Démarrage en zone de notification ({self.res}p)...")
+
+        peer_host = self._build_network_peer_host()
+        cap = None
+        width, height = (1920, 1080) if self.res == 1080 else (1280, 720)
+
+        try:
+            if self.api.start_webcam(self.res):
+                self.local_webcam_active = True
+                print("[+] GoPro détectée, mode émetteur activé.")
+            else:
+                print("[+] GoPro non détectée, mode récepteur activé.")
+        except Exception:
+            print("[+] GoPro non détectée, mode récepteur activé.")
+
+        if self.local_webcam_active:
+            stream_url = STREAM_URL
+            keep_alive_thread = threading.Thread(target=self.api.keep_alive, args=(self.stop_event,), daemon=True)
+            keep_alive_thread.start()
+
+            cap = self._wait_for_stream_capture(stream_url, timeout_seconds=15.0)
+            if cap is None:
+                print("[-] Impossible d'ouvrir le flux local de la GoPro, passage en réception réseau.")
+                self.local_webcam_active = False
+                self._close_network_sender()
+
+        if not self.local_webcam_active:
+            receiver_thread = threading.Thread(target=self._run_network_receiver, args=(peer_host,), daemon=True)
+            receiver_thread.start()
+            if peer_host is None:
+                print("[+] En attente d'un flux réseau entrant. Configure l'IP du PC distant dans les paramètres.")
+            else:
+                print(f"[+] En attente du flux réseau depuis {peer_host}.")
+
+        if cap is not None:
+            self._configure_capture(cap)
+
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+            if width == 0 or height == 0:
+                width, height = (1920, 1080) if self.res == 1080 else (1280, 720)
+
+            reader_thread = threading.Thread(target=self.enqueue_frames, args=(cap,), daemon=True)
+            reader_thread.start()
 
         self.start_time = time.time()
         print(f"[+] Initialisation de la Webcam Virtuelle OBS ({width}x{height} @ {DEFAULT_FPS}fps)...")
@@ -317,6 +482,9 @@ class GoProStreamer:
 
                     frame = self._draw_chrono(frame)
                     cam.send(frame)
+
+                    if self.local_webcam_active and peer_host is not None:
+                        self._send_frame_to_peer(frame, peer_host)
 
                     if self.preview_enabled:
                         if not self._handle_preview_window(frame, self.window_title):
@@ -351,7 +519,8 @@ class GoProStreamer:
             print("[+] Arrêt proprement...")
             self.running = False
             self.stop_event.set()
-            cap.release()
+            if cap is not None:
+                cap.release()
             try:
                 cv2.destroyAllWindows()
             except cv2.error:
@@ -361,5 +530,8 @@ class GoProStreamer:
                     self.tray_icon.stop()
                 except Exception:
                     pass
-            self.api.stop_webcam()
+            if self.local_webcam_active:
+                self.api.stop_webcam()
+            self._close_network_sender()
+            self._close_network_server()
             print("[+] Terminé.")
