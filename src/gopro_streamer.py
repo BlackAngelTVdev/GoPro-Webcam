@@ -22,7 +22,7 @@ os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "fflags;nobuffer|flags;low_delay|m
 import cv2
 
 from .app_settings import AppSettings
-from .config import DEFAULT_FPS, DEFAULT_RESOLUTION, FFMPEG_CAPTURE_OPTIONS, STREAM_URL
+from .config import DEFAULT_FPS, DEFAULT_RESOLUTION, FFMPEG_CAPTURE_OPTIONS, NETWORK_STREAM_PATH, NETWORK_STREAM_PORT, STREAM_URL
 from .gopro_api import GoProAPI
 from .settings_dialog import open_settings_dialog
 
@@ -47,6 +47,7 @@ class GoProStreamer:
         self.preview_window_open = False
         self.close_prompt_active = False
         self.preview_close_requested = False
+        self.local_webcam_active = False
 
     def _update_settings(self, updated_settings: AppSettings) -> None:
         self.settings = updated_settings
@@ -151,6 +152,31 @@ class GoProStreamer:
 
         cap.release()
         return None
+
+    def _wait_for_stream_capture(self, stream_url: str, timeout_seconds: float = 15.0) -> cv2.VideoCapture | None:
+        deadline = time.time() + timeout_seconds
+
+        while not self.stop_event.is_set() and time.time() < deadline:
+            cap = self._open_stream_capture(stream_url)
+            if cap is not None:
+                return cap
+            time.sleep(0.5)
+
+        return None
+
+    def _build_network_stream_url(self) -> str | None:
+        host = self.settings.network_stream_host.strip()
+        if not host:
+            return None
+
+        return f"http://{host}:{NETWORK_STREAM_PORT}/{NETWORK_STREAM_PATH}"
+
+    def _configure_capture(self, cap) -> None:
+        if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        if FFMPEG_CAPTURE_OPTIONS and hasattr(cv2, "CAP_PROP_HW_ACCELERATION"):
+            cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_NONE)
 
     def enqueue_frames(self, cap) -> None:
         while self.running and not self.stop_event.is_set():
@@ -261,30 +287,42 @@ class GoProStreamer:
     def start(self) -> None:
         print(f"[+] Initialisation de la GoPro ({self.res}p)...")
 
+        stream_url = STREAM_URL
+
         try:
-            if not self.api.start_webcam(self.res):
-                print("[-] La GoPro a refusé de démarrer.")
-                return
+            if self.api.start_webcam(self.res):
+                self.local_webcam_active = True
+            else:
+                network_stream_url = self._build_network_stream_url()
+                if network_stream_url is None:
+                    print("[-] La GoPro a refusé de démarrer et aucun flux réseau n'est configuré.")
+                    return
+
+                stream_url = network_stream_url
+                print(f"[+] GoPro absente, bascule vers le flux réseau {network_stream_url}.")
 
         except Exception as exc:
-            print(f"[-] Impossible de configurer la GoPro : {exc}")
-            return
+            network_stream_url = self._build_network_stream_url()
+            if network_stream_url is None:
+                print(f"[-] Impossible de configurer la GoPro : {exc}")
+                return
 
-        keep_alive_thread = threading.Thread(target=self.api.keep_alive, args=(self.stop_event,), daemon=True)
-        keep_alive_thread.start()
+            stream_url = network_stream_url
+            print(f"[+] GoPro indisponible, bascule vers le flux réseau {network_stream_url}.")
 
-        print("[+] Connexion au flux vidéo (Attente de l'image clé...)")
-        cap = self._open_stream_capture(STREAM_URL)
+        if self.local_webcam_active:
+            keep_alive_thread = threading.Thread(target=self.api.keep_alive, args=(self.stop_event,), daemon=True)
+            keep_alive_thread.start()
+
+        print(f"[+] Connexion au flux vidéo ({stream_url})...")
+        cap = self._wait_for_stream_capture(stream_url)
 
         if cap is None:
             print("[-] Échec de l'ouverture du flux UDP.")
             self.stop_event.set()
             return
 
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-        if FFMPEG_CAPTURE_OPTIONS and hasattr(cv2, "CAP_PROP_HW_ACCELERATION"):
-            cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_NONE)
+        self._configure_capture(cap)
 
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -361,5 +399,6 @@ class GoProStreamer:
                     self.tray_icon.stop()
                 except Exception:
                     pass
-            self.api.stop_webcam()
+            if self.local_webcam_active:
+                self.api.stop_webcam()
             print("[+] Terminé.")

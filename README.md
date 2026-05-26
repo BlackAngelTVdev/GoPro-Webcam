@@ -16,6 +16,7 @@ Capture le flux webcam de la GoPro et l'expose comme une webcam virtuelle pour O
 - ✅ Démarrage/arrêt automatique de la GoPro en mode Webcam
 - ✅ Sortie webcam virtuelle compatible OBS (pyvirtualcam)
 - ✅ Bascule automatique vers un aperçu local si OBS/virtualcam absent
+- ✅ Champ réseau pour essayer un flux distant quand aucune GoPro n'est détectée
 - ✅ Icône dans la zone de notification avec `Afficher`, `Masquer` et `Quitter`
 - ✅ Menu `Paramètres` dans la zone de notification pour activer le lancement au démarrage
 - ✅ Choix du lancement avec ou sans aperçu local
@@ -59,6 +60,7 @@ Capture le flux webcam de la GoPro et l'expose comme une webcam virtuelle pour O
 	- Clique sur l'icône dans la zone de notification
 	- Ouvre `Paramètres`
 	- Active ou désactive le lancement au démarrage et l'aperçu local
+	- Renseigne l'IP du PC qui fournit le flux réseau si tu veux un secours sans GoPro
 
 ## 🔧 Packaging en .exe (Windows)
 Utilise PyInstaller pour créer un exécutable. Exemple:
